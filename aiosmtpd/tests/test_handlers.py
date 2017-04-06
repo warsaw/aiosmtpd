@@ -715,3 +715,64 @@ Testing
             controller.smtpd.warnings[0],
             call('Use handler.handle_RSET() instead of .rset_hook()',
                  DeprecationWarning))
+
+
+class BrokenHandler:
+    # Deliberately not a coroutine.
+    def handle_VRFY(self, server, session, envelope):
+        pass
+
+    # Deliberately returns None.
+    @asyncio.coroutine
+    def handle_RSET(self, server, session, envelope):
+        return None
+
+
+class SMTPExceptionCapture(Server):
+    def __init__(self, *args, **kws):
+        self.exception_message = None
+        super().__init__(*args, **kws)
+
+    @asyncio.coroutine
+    def smtp_VRFY(self, arg):
+        try:
+            super().smtp_VRFY(arg)
+        except RuntimeError as error:
+            self.exception_message = str(error)
+
+    @asyncio.coroutine
+    def smtp_RSET(self, arg):
+        try:
+            super().smtp_RSET(arg)
+        except RuntimeError as error:
+            self.exception_message = str(error)
+
+
+class BrokenController(Controller):
+    def factory(self):
+        self.server = SMTPExceptionCapture(self.handler)
+        return self.server
+
+
+class TestHandlerErrors(unittest.TestCase):
+    def test_hooks_must_be_a_coroutine(self):
+        controller = BrokenController(BrokenHandler())
+        controller.start()
+        self.addCleanup(controller.stop)
+        with SMTP(controller.hostname, controller.port) as client:
+            client.ehlo('example.com')
+            client.vrfy('anne@example.com')
+        self.assertEqual(
+            controller.server.exception_message,
+            'Handler hook must be a coroutine: handle_VRFY')
+
+    def test_hooks_must_not_return_None(self):
+        controller = BrokenController(BrokenHandler())
+        controller.start()
+        self.addCleanup(controller.stop)
+        with SMTP(controller.hostname, controller.port) as client:
+            client.ehlo('example.com')
+            client.rset()
+        self.assertEqual(
+            controller.server.exception_message,
+            'Handler hook returned None; status string expected: handle_RSET')

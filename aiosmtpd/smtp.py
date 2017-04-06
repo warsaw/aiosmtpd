@@ -184,7 +184,14 @@ class SMTP(asyncio.StreamReaderProtocol):
         hook = getattr(self.event_handler, 'handle_' + command, None)
         if hook is None:
             return MISSING
+        # It might be common that a programming error causes the hook function
+        # to break the API requirements.
+        if not asyncio.iscoroutinefunction(hook):
+            log.error('Handler hook must be a coroutine: {}'.format(hook))
         status = yield from hook(self, self.session, self.envelope, *args)
+        if status is None:
+            log.error('Handler hook returned None; status string expected: '
+                      '{}'.format(hook))
         return status
 
     @asyncio.coroutine
